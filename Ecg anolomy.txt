@@ -1,0 +1,204 @@
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import confusion_matrix, recall_score, accuracy_score, precision_score
+
+
+# Define constants
+RANDOM_SEED = 2021
+TEST_PCT = 0.3
+LABELS = ["Normal", "Fraud"]
+
+
+# Load the dataset
+dataset = pd.read_csv("C:/Users/LAB A-36/Downloads/archive/creditcard.csv")
+
+
+# Check for any null values
+print("Any nulls in the dataset:", dataset.isnull().values.any())
+
+
+# Display unique labels
+print("Number of unique labels:", len(dataset['Class'].unique()))
+print("Label values:", dataset.Class.unique())
+
+
+# Visualize the imbalance in the dataset
+print("Breakdown of Normal and Fraud Transactions:")
+print(pd.value_counts(dataset['Class'], sort=True))
+
+
+# Normalize Time and Amount columns
+sc = StandardScaler()
+dataset['Time'] = sc.fit_transform(dataset['Time'].values.reshape(-1, 1))
+dataset['Amount'] = sc.fit_transform(dataset['Amount'].values.reshape(-1, 1))
+
+raw_data = dataset.values
+
+
+
+raw_data = dataset.values
+
+
+
+# The last element contains if the transaction is normal (0) or fraud (1)
+labels = raw_data[:, -1]
+
+
+# The other data points are the electrocardiogram data
+data = raw_data[:, 0:-1]
+
+
+# Split the data into training and test sets
+train_data, test_data, train_labels, test_labels = train_test_split(data, labels, test_size=0.2, random_state=2021)
+
+
+# Normalize the data to the range [0, 1]
+min_val = tf.reduce_min(train_data)
+max_val = tf.reduce_max(train_data)
+train_data = (train_data - min_val) / (max_val - min_val)
+test_data = (test_data - min_val) / (max_val - min_val)
+
+
+
+# Cast data to float32
+train_data = tf.cast(train_data, tf.float32)
+test_data = tf.cast(test_data, tf.float32)
+
+# Create boolean labels for normal and fraud
+train_labels = train_labels.astype(bool)
+test_labels = test_labels.astype(bool)
+
+
+
+# Create datasets for normal and fraud records
+normal_train_data = train_data[~train_labels]
+normal_test_data = test_data[~test_labels]
+fraud_train_data = train_data[train_labels]
+fraud_test_data = test_data[test_labels]
+
+print("No. of records in Fraud Train Data =", len(fraud_train_data))
+print("No. of records in Normal Train Data =", len(normal_train_data))
+print("No. of records in Fraud Test Data =", len(fraud_test_data))
+print("No. of records in Normal Test Data =", len(normal_test_data))
+
+
+
+nb_epoch = 50
+batch_size = 64
+input_dim = normal_train_data.shape[1]
+encoding_dim = 14
+hidden_dim1 = int(encoding_dim / 2)
+hidden_dim2 = 4
+learning_rate = 1e-7
+
+# Define the input layer
+input_layer = tf.keras.layers.Input(shape=(input_dim,))
+
+# Encoder layers
+encoder = tf.keras.layers.Dense(encoding_dim, activation="tanh", activity_regularizer=tf.keras.regularizers.l2(learning_rate))(input_layer)
+encoder = tf.keras.layers.Dropout(0.2)(encoder)
+encoder = tf.keras.layers.Dense(hidden_dim1, activation='relu')(encoder)
+encoder = tf.keras.layers.Dense(hidden_dim2, activation=tf.nn.leaky_relu)(encoder)
+
+
+
+# Decoder layers
+decoder = tf.keras.layers.Dense(hidden_dim1, activation='relu')(encoder)
+decoder = tf.keras.layers.Dropout(0.2)(decoder)
+decoder = tf.keras.layers.Dense(encoding_dim, activation='relu')(decoder)
+decoder = tf.keras.layers.Dense(input_dim, activation='tanh')(decoder)
+
+# Autoencoder model
+autoencoder = tf.keras.Model(inputs=input_layer, outputs=decoder)
+
+autoencoder.summary()
+
+
+
+# Model checkpoint
+cp = tf.keras.callbacks.ModelCheckpoint(
+    filepath="autoencoder_fraud.h5",
+    mode='min',
+    monitor='val_loss',
+    verbose=2,
+    save_best_only=True
+)
+
+
+
+# Early stopping
+early_stop = tf.keras.callbacks.EarlyStopping(
+    monitor='val_loss',
+    min_delta=0.0001,
+    patience=10,
+    verbose=11,
+    mode='min',
+    restore_best_weights=True
+)
+
+
+
+
+# Compile the autoencoder model
+autoencoder.compile(metrics=['accuracy'], loss='mean_squared_error', optimizer='adam')
+
+# Train the model
+history = autoencoder.fit(
+    normal_train_data,
+    normal_train_data,
+    epochs=nb_epoch,
+    batch_size=batch_size,
+    shuffle=True,
+    validation_data=(test_data, test_data),
+    verbose=1,
+    callbacks=[cp, early_stop]
+).history
+
+
+
+# Plot loss history
+plt.plot(history['loss'], linewidth=2, label='Train')
+plt.plot(history['val_loss'], linewidth=2, label='Test')
+plt.legend(loc='upper right')
+plt.title('Model Loss')
+plt.ylabel('Loss')
+plt.xlabel('Epoch')
+plt.show()
+
+
+# Calculate reconstruction error and create a DataFrame
+test_x_predictions = autoencoder.predict(test_data)
+mse = np.mean(np.power(test_data - test_x_predictions, 2), axis=1)
+error_df = pd.DataFrame({'Reconstruction_error': mse, 'True_class': test_labels})
+
+
+
+# Set a fixed threshold for anomaly detection
+threshold_fixed = 52
+pred_y = [1 if e > threshold_fixed else 0 for e in error_df.Reconstruction_error.values]
+error_df['pred'] = pred_y
+
+
+# Create and display a confusion matrix
+conf_matrix = confusion_matrix(error_df.True_class, pred_y)
+plt.figure(figsize=(4, 4))
+sns.heatmap(conf_matrix, xticklabels=LABELS, yticklabels=LABELS, annot=True, fmt="d")
+plt.title("Confusion matrix")
+plt.ylabel("True class")
+plt.xlabel("Predicted class")
+plt.show()
+
+
+
+# Print Accuracy, Precision, and Recall
+print("Accuracy:", accuracy_score(error_df['True_class'], error_df['pred']))
+print("Recall:", recall_score(error_df['True_class'], error_df['pred']))
+print("Precision:", precision_score(error_df['True_class'], error_df['pred']))
+
+
+
